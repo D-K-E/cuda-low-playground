@@ -1,6 +1,7 @@
 // reduce: sum n floats; times each version and prints effective bandwidth.
 // Usage: ./reduce [n]   (default 2^24)
 #include "../common/check.cuh"
+#include <cooperative_groups.h>
 #include <cstdlib>
 #include <vector>
 
@@ -65,10 +66,58 @@ __global__ void reduce_v6(const float *in, float *out, int n) {
   for (size_t i = gtid; i < n; i += stride) {
     s += in[i];
   }
+  const int warp_size = 32;
+  //
+  unsigned full_mask = __ballot(1);
+  for (size_t warp_offset = warp_size / 2; warp_offset > 0; warp_offset /= 2) {
+    s += __shfl_down_sync(full_mask, sum, warp_offset);
+  }
 
   // warp level sum, so that we have 1 atomic add for block
-  // idea is if we can sum all lanes inside a warp, we reduce the number of
-  // ops to do sum
+  int lane = threadIdx.x;
+  while (lane > warp_size) {
+    lane -= warp_size;
+  }
+  const int warp_id = threadIdx.x / warp_size;
+  __shared__ float warp_sums[warp_size];
+  if (lane == 0) {
+    warp_sums[warp_id] = sum;
+  }
+  __syncthreads();
+
+  if (warp_id == 0) {
+    const int num_warps = blockDim.x / warp_size;
+    float block_sum = lane < num_warps ? warp_sums[lane] : 0.f;
+    unsigned full_mask = __ballot(1);
+    for (size_t warp_offset = warp_size / 2; warp_offset > 0;
+         warp_offset /= 2) {
+      block_sum += __shfl_down_sync(full_mask, block_sum, warp_offset);
+    }
+    if (lane == 0) {
+      atomicAdd(out, block_sum);
+    }
+  }
+}
+
+namespace cg = cooperative_groups;
+
+template <size_t NbWarpPerBlock>
+__global__ void reduce_v7(const float *in, float *out, int n) {
+    // shape of this algorithm is the following
+
+    // grid stride sum accumulates elements across stride to a thread **register**
+
+    // then we accumulate each thread register to warp leader (first
+    // lane/thread)
+
+    // then we store each warp leader value to shared memory
+    // shared memory size is equal to the number of warps per block
+    // so each warp leader has a slot there
+
+    // then reduce values accumulated in the shared memory into a single
+    // value, at this point the value represents the whole block
+
+    // then we add that value representing the block to out via atomicAdd 
 }
 
 // TODO v1..v6: see README.md. Each is a kernel plus a run_vN launcher below.
@@ -88,6 +137,10 @@ static void run_v1(const float *in, float *out, int n) {
 }
 
 static void run_v3(const float *in, float *out, int n) {
+  constexpr size_t shared = 32;
+  reduce_v3<shared><<<(n + 255) / 256, 256>>>(in, out, n);
+}
+static void run_v6(const float *in, float *out, int n) {
   constexpr size_t shared = 32;
   reduce_v3<shared><<<(n + 255) / 256, 256>>>(in, out, n);
 }

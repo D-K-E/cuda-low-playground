@@ -32,3 +32,20 @@ Various programming experiments with CUDA for deepening various concepts.
 - SM Register: total number registers assigned to an SM. This is GPU
   architecture dependent. 64k registers are typical, meaning 64000*32 bit
   registers. 
+
+
+## Tips and Tricks
+
+1. Warp reduction, see `01_memory/reduce.cu`. The shape is similar for most
+problems so it pays to know it:
+  1. Move relevant values to registers.
+  2. Do something with those values in registers using warp level primitives,
+  save your result to warp leader (first lane)
+  3. Store each warp leader to shared memory, so that they can be shared at
+  block level. The size of the shared memory should be equal to the number of
+  warps in a block, so that we can house the result of each warp.
+  4. Synchronize at this point, so that each thread in the block has a value
+  to work with in the shared memory
+  5. Compute what you need with shared memory
+  6. Store result.
+
